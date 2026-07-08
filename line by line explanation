@@ -1,0 +1,147 @@
+1. Imports and Setup
+
+    import tensorflow as tf – Imports the TensorFlow library, the core framework for building and training neural networks.
+
+    import numpy as np – Imports NumPy, used for efficient numerical operations on arrays (here, for character mapping and indexing).
+
+    import os – Imports the operating system module (not used directly in the code, but often included for path handling; it’s harmless).
+
+2. Download and Load the Text Data
+
+    path_to_file = tf.keras.utils.get_file(...) – Downloads the Shakespeare text file from a given URL and saves it locally. The function returns the local file path.
+
+    text = open(path_to_file, 'rb').read().decode(encoding='utf-8') – Opens the file in binary mode ('rb'), reads the raw bytes, then decodes them to a UTF‑8 string. This gives us the entire play text as a single Python string.
+
+    print(f"Corpus length: {len(text)} characters") – Prints the total number of characters in the text, giving an idea of the dataset size.
+
+3. Create Character Mappings
+
+    vocab = sorted(set(text)) – Creates a set of all unique characters in the text (letters, punctuation, spaces, etc.), then sorts them to produce a deterministic list. This is our vocabulary.
+
+    vocab_size = len(vocab) – Stores the number of unique characters (e.g., ~65 for Shakespeare’s text).
+
+    print(f"Unique characters: {vocab_size}") – Prints the vocabulary size.
+
+    char2idx = {u: i for i, u in enumerate(vocab)} – Builds a dictionary that maps each character to a unique integer index (e.g., 'a' → 0, 'b' → 1).
+
+    idx2char = np.array(vocab) – Converts the vocabulary list into a NumPy array so we can later map an integer index back to its character using array indexing.
+
+    text_as_int = np.array([char2idx[c] for c in text]) – Converts the entire text string into a NumPy array of integers, where each character is replaced by its corresponding index from char2idx. This is the numeric representation of the whole corpus.
+
+4. Create Training Sequences with tf.data
+
+    SEQ_LENGTH = 100 – Defines the length of each input sequence (number of characters the model sees at once).
+
+    BATCH_SIZE = 64 – Number of sequences in each training batch.
+
+    BUFFER_SIZE = 10000 – Size of the shuffle buffer (how many elements to load into memory for shuffling).
+
+    char_dataset = tf.data.Dataset.from_tensor_slices(text_as_int) – Creates a TensorFlow Dataset object that yields each integer one by one from the text_as_int array. This is a stream of individual characters.
+
+    sequences = char_dataset.batch(SEQ_LENGTH + 1, drop_remainder=True) – Batches the character stream into chunks of length 101 (SEQ_LENGTH+1). drop_remainder=True discards any incomplete final batch. Each chunk will be used to create an input‑target pair.
+
+    def split_input_target(chunk): – Defines a helper function that takes a chunk of length 101 and returns two tensors: the first 100 characters as input, and the last 100 characters as target. For every position t, the model sees input at t and learns to predict the character at t+1.
+
+    dataset = sequences.map(split_input_target) – Applies the split function to every chunk in the dataset, resulting in a dataset of (input_sequence, target_sequence) pairs.
+
+    dataset = dataset.shuffle(BUFFER_SIZE).batch(BATCH_SIZE, drop_remainder=True).prefetch(tf.data.AUTOTUNE) –
+
+        .shuffle(BUFFER_SIZE) randomly shuffles the sequence pairs using a buffer of 10,000 elements (improves training randomness).
+
+        .batch(BATCH_SIZE, drop_remainder=True) groups the shuffled pairs into mini‑batches of 64; drops the last incomplete batch.
+
+        .prefetch(tf.data.AUTOTUNE) overlaps data preprocessing and model execution for better performance.
+
+5. Build the Model
+
+    EMBEDDING_DIM = 256 – Dimension of the embedding vector for each character.
+
+    GRU_UNITS = 1024 – Number of units (neurons) in the GRU layer.
+
+    model = tf.keras.Sequential([ ... ]) – Creates a sequential model, stacking layers in order.
+
+    Embedding(vocab_size, EMBEDDING_DIM, batch_input_shape=[BATCH_SIZE, None]) –
+
+        This layer converts integer indices into dense vectors of size 256.
+
+        batch_input_shape fixes the batch size to 64 and allows variable sequence length (None). This helps with performance.
+
+    GRU(GRU_UNITS, return_sequences=True, stateful=False, dropout=0.2) –
+
+        A Gated Recurrent Unit layer with 1024 units.
+
+        return_sequences=True – returns the full sequence of outputs (not just the last one) because we need predictions at every time step.
+
+        stateful=False – the GRU does not preserve its internal state between batches (standard for this type of training).
+
+        dropout=0.2 – applies 20% dropout to the input connections, helping prevent overfitting.
+
+    Dense(vocab_size, activation='softmax') – A fully connected layer with one output per character in the vocabulary, using softmax to produce a probability distribution over the next character.
+
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy']) – Configures the model for training:
+
+        adam optimizer (adaptive learning rate).
+
+        sparse_categorical_crossentropy – suitable when targets are integer class labels (not one‑hot).
+
+        tracks accuracy during training.
+
+    model.summary() – Prints a table showing layer names, output shapes, and number of trainable parameters.
+
+6. Train the Model
+
+    EPOCHS = 20 – Number of times to iterate over the entire dataset.
+
+    history = model.fit(dataset, epochs=EPOCHS) – Trains the model on the batched dataset for 20 epochs. The history object stores training loss and accuracy values for each epoch (can be used for plotting later).
+
+7. Text Generation with Temperature
+
+    def generate_text(model, start_string, num_generate=500, temperature=1.0): – Defines a function that generates new text character by character.
+
+    input_indices = [char2idx[s] for s in start_string if s in char2idx] – Converts the starting string (e.g., "ROMEO: ") into a list of integer indices, ignoring any characters not in the vocabulary.
+
+    if not input_indices: input_indices = [char2idx[' ']] – If the start string is empty or contains only unknown characters, fallback to a space character.
+
+    input_indices = tf.constant(input_indices, dtype=tf.int64) – Converts the list to a TensorFlow constant.
+
+    input_indices = tf.expand_dims(input_indices, 0) – Adds a batch dimension, making the shape (1, len_start) because the model expects a batch axis.
+
+    generated = list(start_string) – Initialises the output list with the starting string characters.
+
+    for _ in range(num_generate): – Loop to generate num_generate new characters.
+
+    predictions = model(input_indices) – Runs the model on the current input sequence; returns logits (before softmax) of shape (1, current_seq_len, vocab_size).
+
+    predictions = predictions[:, -1, :] – Keeps only the predictions for the last time step, giving shape (1, vocab_size) – these are the probabilities for the next character.
+
+    predictions = predictions / temperature – Divides the logits by the temperature parameter. Higher temperature (e.g., 1.5) makes the distribution more uniform (more random); lower temperature (0.5) makes it more peaked (more conservative, picking the most likely character).
+
+    sampled_index = tf.random.categorical(predictions, num_samples=1) – Samples one index from the categorical distribution defined by the scaled logits. tf.random.categorical takes logits (not probabilities) and returns an integer.
+
+    sampled_index = sampled_index.numpy()[0][0] – Converts the Tensor to a NumPy array and extracts the scalar integer value.
+
+    predicted_char = idx2char[sampled_index] – Maps the integer back to a character using the idx2char array.
+
+    generated.append(predicted_char) – Appends the new character to the generated text list.
+
+    input_indices = tf.concat([input_indices[:, 1:], [[sampled_index]]], axis=-1) – Updates the input sequence for the next step:
+
+        input_indices[:, 1:] drops the first character of the current sequence.
+
+        [[sampled_index]] adds the newly predicted character at the end.
+
+        tf.concat along the last axis creates a new sequence of the same length (sliding window).
+
+    return ''.join(generated) – Joins all characters into a single string and returns it.
+
+8. Generate Sample Text with Different Temperatures
+
+    start_text = "ROMEO: " – Defines a common starting prompt.
+
+    Three print statements call generate_text with the same start string, generating 300 characters each, at temperatures 0.5, 1.0, and 1.5.
+
+        Lower temperature (0.5) produces more predictable, repetitive text.
+
+        Temperature 1.0 is balanced.
+
+        Higher temperature (1.5) produces more diverse, sometimes nonsensical text.
